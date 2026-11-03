@@ -5,8 +5,6 @@ same face on my SenseCAP Watcher. This repo puts it there, on top of the
 XiaoZhi voice assistant, so the Watcher still talks to you, sees with its
 camera and does everything XiaoZhi does, but with Purple's eyes.
 
-> 📺 Video: *(YouTube link goes here)*
-
 The face is alive on its own: it blinks (sometimes twice), darts its eyes
 around, breathes, glances about and gets bored, yawns and falls asleep when
 you leave it alone. When you talk to it, it reacts:
