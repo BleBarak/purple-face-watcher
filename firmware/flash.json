@@ -1,0 +1,37 @@
+{
+  "xiaozhi": "v2.5.2",
+  "language": "en-US",
+  "wake_word": "wn9_hijoy_tts",
+  "parts": [
+    {
+      "name": "bootloader",
+      "offset": "0x0",
+      "file": "bootloader.bin",
+      "sha256": "81af7154b3d5df88cc75ebc1fbbe3a74b8fc908da7964187c1725b8347ebc9cf"
+    },
+    {
+      "name": "partition-table",
+      "offset": "0x8000",
+      "file": "partition-table.bin",
+      "sha256": "d2c535fc5f29da4d32f122befe65b97925777549b000f93ced719e71a942a3a9"
+    },
+    {
+      "name": "ota-data",
+      "offset": "0x10d000",
+      "file": "ota_data_initial.bin",
+      "sha256": "7d2c7ac4888bfd75cd5f56e8d61f69595121183afc81556c876732fd3782c62f"
+    },
+    {
+      "name": "app",
+      "offset": "0x200000",
+      "file": "xiaozhi.bin",
+      "sha256": "23439769302e84ef5c95d32160baed78cdea96466fe456d3004b80710ee023f2"
+    },
+    {
+      "name": "assets",
+      "offset": "0xa00000",
+      "file": "assets.bin",
+      "sha256": "60e27fecf3441db55851922bf540262779b49f61ea095b89ca968781feeb669b"
+    }
+  ]
+}

@@ -1,0 +1,6 @@
+# Your Watcher's backup: private to your device, never commit it
+backups/
+# Local builds (scripts/build.sh)
+build/
+.venv/
+__pycache__/

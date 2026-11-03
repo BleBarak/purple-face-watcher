@@ -1,0 +1,214 @@
+diff --git a/main/boards/sensecap-watcher/sensecap_watcher.cc b/main/boards/sensecap-watcher/sensecap_watcher.cc
+index 6d0d08d..3998972 100644
+--- a/main/boards/sensecap-watcher/sensecap_watcher.cc
++++ b/main/boards/sensecap-watcher/sensecap_watcher.cc
+@@ -28,6 +28,15 @@
+ #include <esp_mac.h>
+ #include <nvs_flash.h>
+ #include <esp_app_desc.h>
++#include <esp_timer.h>
++#include <esp_heap_caps.h>
++#include <mutex>
++#include <new>
++#include <atomic>
++#include <string>
++
++#include "purple_face/face_controller.h"
++#include "purple_face/friends_lan.h"
+ 
+ #include "assets/lang_config.h"
+ 
+@@ -99,6 +108,185 @@ class CustomLcdDisplay : public SpiLcdDisplay {
+             // 针对圆形屏幕调整底部对话框位置，避免被圆角遮挡
+             lv_obj_set_style_pad_bottom(bottom_bar_, 30, 0);
+             lv_obj_set_width(chat_message_label_, LV_HOR_RES * 0.75); // 限制宽度，避免文字贴边
++
++            SetupPurpleFace();
++        }
++
++        // ---- Purple's face instead of the emoji ----------------------------
++        // The AI's emotions become Purple reactions; the face itself is drawn
++        // by a background task and shown as a full-screen image behind the
++        // status text and subtitles.
++        virtual void SetEmotion(const char* emotion) override {
++            if (face_img_ == nullptr) {
++                SpiLcdDisplay::SetEmotion(emotion);
++                return;
++            }
++            std::lock_guard<std::mutex> lock(input_mutex_);
++            pending_emotion_ = emotion ? emotion : "";
++        }
++
++        void FaceKnob(bool clockwise) { pending_knob_ = clockwise ? 1 : -1; }
++
++        // A Purple face for a while (from the friends task).
++        void PurpleReact(const char* face, float seconds) {
++            std::lock_guard<std::mutex> lock(input_mutex_);
++            pending_react_ = face;
++            pending_react_secs_ = seconds;
++        }
++
++    private:
++        purple::FaceRenderer* face_ = nullptr;
++        purple::FaceController* ctrl_ = nullptr;
++        uint16_t* frame_ = nullptr;  // what LVGL shows
++        uint16_t* back_ = nullptr;   // what the face task draws into
++        lv_image_dsc_t face_dsc_ = {};
++        lv_obj_t* face_img_ = nullptr;
++        std::mutex input_mutex_;
++        std::string pending_emotion_;
++        std::string pending_react_;
++        float pending_react_secs_ = 0;
++        purple::FriendsLan friends_;
++        std::atomic<int> pending_knob_{0};
++        int dirty_x0_ = 0, dirty_y0_ = 0, dirty_x1_ = 0, dirty_y1_ = 0;
++
++        static constexpr int kSize = purple::SCR_W;  // 412
++
++        void SetupPurpleFace() {
++            size_t bytes = kSize * kSize * 2;
++            frame_ = (uint16_t*)heap_caps_calloc(1, bytes, MALLOC_CAP_SPIRAM);
++            back_ = (uint16_t*)heap_caps_calloc(1, bytes, MALLOC_CAP_SPIRAM);
++            // The engine object (~60 KB of shape state) lives in PSRAM too.
++            void* mem = heap_caps_malloc(sizeof(purple::FaceRenderer), MALLOC_CAP_SPIRAM);
++            face_ = mem ? new (mem) purple::FaceRenderer(&CustomLcdDisplay::FaceSink, this) : nullptr;
++            if (!face_) {
++                ESP_LOGE(TAG, "Purple face: not enough memory, keeping the emoji");
++                return;
++            }
++            if (!frame_ || !back_ || !face_->begin()) {
++                ESP_LOGE(TAG, "Purple face: not enough memory, keeping the emoji");
++                return;
++            }
++            ctrl_ = new purple::FaceController(*face_);
++            ctrl_->begin();
++
++            DisplayLockGuard lock(this);
++            face_dsc_.header.magic = LV_IMAGE_HEADER_MAGIC;
++            face_dsc_.header.cf = LV_COLOR_FORMAT_RGB565;
++            face_dsc_.header.w = kSize;
++            face_dsc_.header.h = kSize;
++            face_dsc_.header.stride = kSize * 2;
++            face_dsc_.data_size = bytes;
++            face_dsc_.data = (const uint8_t*)frame_;
++            face_img_ = lv_image_create(lv_screen_active());
++            lv_image_set_src(face_img_, &face_dsc_);
++            lv_obj_set_pos(face_img_, 0, 0);
++            lv_obj_move_to_index(face_img_, 1);  // above the background, under the text
++            if (emoji_box_) lv_obj_add_flag(emoji_box_, LV_OBJ_FLAG_HIDDEN);
++            // Plain text over the face: half-transparent bars would make LVGL
++            // blend every pixel under them on every frame.
++            lv_obj_set_style_bg_opa(top_bar_, LV_OPA_TRANSP, 0);
++            lv_obj_set_style_bg_opa(bottom_bar_, LV_OPA_TRANSP, 0);
++
++            // Stack in PSRAM as well (this task never writes flash).
++            // Core 0 at the lowest priority: core 1 is the screen task's, and on
++            // core 0 audio and WiFi always pre-empt the face.
++            xTaskCreatePinnedToCoreWithCaps(&CustomLcdDisplay::FaceTask, "purple_face", 8192, this, 1, nullptr, 0,
++                                            MALLOC_CAP_SPIRAM);
++            ESP_LOGI(TAG, "Purple face started");
++
++            // Play with the Purple app on the same Wi-Fi.
++            friends_.react = [this](const char* face, float secs) { PurpleReact(face, secs); };
++            friends_.notify = [this](const std::string& text, int ms) { ShowNotification(text, ms); };
++            friends_.canPlay = [] { return Application::GetInstance().GetDeviceState() == kDeviceStateIdle; };
++            friends_.sound = [](const char* name) {
++                auto& app = Application::GetInstance();
++                if (app.GetDeviceState() != kDeviceStateIdle) return;
++                app.PlaySound(strcmp(name, "success") == 0 ? Lang::Sounds::OGG_SUCCESS : Lang::Sounds::OGG_POPUP);
++            };
++            friends_.start();
++        }
++
++        // A finished strip of the frame -> the back buffer.
++        static void FaceSink(void* ctx, int x, int y, int w, int h, const uint16_t* px) {
++            auto self = static_cast<CustomLcdDisplay*>(ctx);
++            for (int r = 0; r < h; r++)
++                memcpy(self->back_ + (y + r) * kSize + x, px + r * w, w * 2);
++            if (self->dirty_x1_ <= self->dirty_x0_) {
++                self->dirty_x0_ = x, self->dirty_y0_ = y, self->dirty_x1_ = x + w, self->dirty_y1_ = y + h;
++            } else {
++                self->dirty_x0_ = std::min(self->dirty_x0_, x);
++                self->dirty_y0_ = std::min(self->dirty_y0_, y);
++                self->dirty_x1_ = std::max(self->dirty_x1_, x + w);
++                self->dirty_y1_ = std::max(self->dirty_y1_, y + h);
++            }
++        }
++
++        static purple::Mode ModeFor(DeviceState s) {
++            switch (s) {
++                case kDeviceStateStarting: return purple::Mode::Booting;
++                case kDeviceStateWifiConfiguring:
++                case kDeviceStateActivating: return purple::Mode::Setup;
++                case kDeviceStateConnecting: return purple::Mode::Connecting;
++                case kDeviceStateListening:
++                case kDeviceStateAudioTesting: return purple::Mode::Listening;
++                case kDeviceStateSpeaking:
++                case kDeviceStateNotifying: return purple::Mode::Speaking;
++                case kDeviceStateUpgrading: return purple::Mode::Updating;
++                case kDeviceStateFatalError: return purple::Mode::Error;
++                default: return purple::Mode::Idle;
++            }
++        }
++
++        static void FaceTask(void* arg) {
++            auto self = static_cast<CustomLcdDisplay*>(arg);
++            int64_t last = esp_timer_get_time(), stats_at = last;
++            int frames = 0;
++            int64_t busy = 0;
++            while (true) {
++                int64_t now = esp_timer_get_time();
++                float dt = (now - last) / 1e6f;
++                last = now;
++
++                {
++                    std::lock_guard<std::mutex> lock(self->input_mutex_);
++                    if (!self->pending_emotion_.empty()) {
++                        self->ctrl_->emotion(self->pending_emotion_.c_str());
++                        self->pending_emotion_.clear();
++                    }
++                    if (!self->pending_react_.empty()) {
++                        self->ctrl_->reactFace(self->pending_react_.c_str(), self->pending_react_secs_);
++                        self->pending_react_.clear();
++                    }
++                }
++                int k = self->pending_knob_.exchange(0);
++                if (k) self->ctrl_->knob(k);
++                self->ctrl_->setMode(ModeFor(Application::GetInstance().GetDeviceState()));
++                self->ctrl_->update(dt);
++
++                self->dirty_x0_ = self->dirty_x1_ = 0;
++                self->face_->render();
++                if (self->dirty_x1_ > self->dirty_x0_) {
++                    DisplayLockGuard lock(self);
++                    int x0 = self->dirty_x0_, x1 = self->dirty_x1_;
++                    for (int y = self->dirty_y0_; y < self->dirty_y1_; y++)
++                        memcpy(self->frame_ + y * kSize + x0, self->back_ + y * kSize + x0, (x1 - x0) * 2);
++                    lv_area_t area = {(int32_t)x0, (int32_t)self->dirty_y0_, (int32_t)(x1 - 1), (int32_t)(self->dirty_y1_ - 1)};
++                    lv_obj_invalidate_area(self->face_img_, &area);
++                }
++
++                int64_t spent = esp_timer_get_time() - now;
++                busy += spent;
++                frames++;
++                if (now - stats_at > 10000000) {
++                    ESP_LOGI(TAG, "Purple face: %.1f fps, %.1f ms per frame", frames * 1e6f / (now - stats_at),
++                             busy / 1000.0f / frames);
++                    stats_at = now, frames = 0, busy = 0;
++                }
++                // Up to 20 fps. Always sleep a little so the idle task on this
++                // core runs (watchdog); audio and WiFi pre-empt us anyway.
++                int wait_ms = 50 - (int)(spent / 1000);
++                vTaskDelay(pdMS_TO_TICKS(wait_ms > 8 ? wait_ms : 8));
++            }
+         }
+ };
+ 
+@@ -241,6 +429,7 @@ private:
+         knob_->OnRotate([this](bool clockwise) {
+             ESP_LOGD(TAG, "Knob rotation detected. Clockwise:%s", clockwise ? "true" : "false");
+             OnKnobRotate(clockwise);
++            static_cast<CustomLcdDisplay*>(display_)->FaceKnob(clockwise);
+         });
+         ESP_LOGI(TAG, "Knob initialized with pins A:%d B:%d", BSP_KNOB_A_PIN, BSP_KNOB_B_PIN);
+     }
