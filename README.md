@@ -17,8 +17,8 @@ you leave it alone. When you talk to it, it reacts:
 - all 153 of Purple's faces are built in, drawn live (not pictures), so every
   change is a smooth morph
 
-If you also have the [Purple app](https://github.com/BleBarak/purple) on an
-Android phone, the Watcher ("Joy") and the phone find each other on your
+If you also have the Purple app (my Android app, coming soon) on a phone,
+the Watcher ("Joy") and the phone find each other on your
 Wi-Fi and play rock-paper-scissors, dice duels and coin flips together. That's
 optional; the Watcher works fine on its own.
 
@@ -176,8 +176,8 @@ HUB" splash, then a connecting face.
 
 ## Play with the Purple app (optional)
 
-The [Purple app](https://github.com/BleBarak/purple) is an Android phone app
-with the same face. When the phone and the Watcher are on the **same Wi-Fi**:
+The Purple app is my Android phone app with the same face (not public yet,
+coming soon). When the phone and the Watcher are on the **same Wi-Fi**:
 
 1. In Purple, turn on **Settings › Play with other Purples**
 2. After a few seconds both say hi ("Joy is here" on the phone)
